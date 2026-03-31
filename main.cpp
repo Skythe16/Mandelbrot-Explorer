@@ -1,4 +1,5 @@
 #include <SFML/Graphics.hpp>
+#include <algorithm>
 
 bool isInsideMainBulbs(double x, double y)
 {
@@ -56,6 +57,34 @@ int mandelbrot(double cx, double cy, int maxIterations)
 
     return iteration;
 }
+
+void getCorrectedBox(
+    sf::Vector2i start,
+    sf::Vector2i end,
+    int& left, int& top,
+    int& width, int& height,
+    double aspect)
+{
+    int dx = end.x - start.x;
+    int dy = end.y - start.y;
+
+    if (abs(dx) > abs(dy) * aspect) {
+        dy = (int)(dx / aspect);
+    }
+    else {
+        dx = (int)(dy * aspect);
+    }
+
+    int right = start.x + dx;
+    int bottom = start.y + dy;
+
+    left = std::min(start.x, right);
+    top = std::min(start.y, bottom);
+
+    width = abs(dx);
+    height = abs(dy);
+}
+
 void renderMandelbrot(sf::Image& image, 
     int width, 
     int height, 
@@ -107,6 +136,8 @@ void renderMandelbrot(sf::Image& image,
 int main() {
     constexpr int WIDTH = 1920, HEIGHT = 1080, MAX_ITERATIONS = 1000;
 
+    double aspect = (double)WIDTH / HEIGHT;
+
     double minReal = -2.5;
     double maxReal = 1.0;
     double minImag = -1.5;
@@ -114,6 +145,10 @@ int main() {
 
     bool needsRedraw = true;
 
+    bool isDragging = false;
+
+    sf::Vector2i dragStart;
+    sf::Vector2i dragEnd;
 
     sf::Image image;
     image.create(WIDTH, HEIGHT, sf::Color::Black);
@@ -135,9 +170,12 @@ int main() {
             if (event.type == sf::Event::Closed)
                 window.close();
 
+            //Key Controls
             if (event.type == sf::Event::KeyPressed) {
+
                 double realRange = maxReal - minReal;
                 double imagRange = maxImag - minImag;
+
                 double moveAmountReal = realRange * 0.1;
                 double moveAmountImag = imagRange * 0.1;
 
@@ -151,7 +189,7 @@ int main() {
                     maxReal += moveAmountReal;
                     needsRedraw = true;
                 }
-                else if (event.key.code == sf::Keyboard::Up){
+                else if (event.key.code == sf::Keyboard::Up) {
                     minImag -= moveAmountImag;
                     maxImag -= moveAmountImag;
                     needsRedraw = true;
@@ -188,7 +226,51 @@ int main() {
                     needsRedraw = true;
                 }
             }
+
+            //Mouse Controls
+            else if (event.type == sf::Event::MouseButtonPressed) {
+                double realRange = maxReal - minReal;
+                double imagRange = maxImag - minImag;
+                if (event.mouseButton.button == sf::Mouse::Left) {
+                    isDragging = true;
+                    dragStart = sf::Vector2i(event.mouseButton.x, event.mouseButton.y);
+                    dragEnd = dragStart;
+                }
+            }
+            else if (event.type == sf::Event::MouseMoved) {
+                if (isDragging) {
+                    dragEnd = sf::Vector2i(event.mouseMove.x, event.mouseMove.y);
+                }
+            }
+            else if (event.type == sf::Event::MouseButtonReleased) {
+                if (event.mouseButton.button == sf::Mouse::Left && isDragging) {
+                    isDragging = false;
+                    dragEnd = sf::Vector2i(event.mouseButton.x, event.mouseButton.y);
+
+                    double realRange = maxReal - minReal;
+                    double imagRange = maxImag - minImag;
+                    int top, left, width, height;
+
+                    getCorrectedBox(dragStart, dragEnd, left, top, width, height, (double)WIDTH / HEIGHT);
+
+                    if (width > 5 && height > 5) {
+                        double newMinReal = minReal + (double)left / WIDTH * realRange;
+                        double newMaxReal = minReal + (double)(left + width) / WIDTH * realRange;
+                        double newMinImag = minImag + (double)top / HEIGHT * imagRange;
+                        double newMaxImag = minImag + (double)(top + height) / HEIGHT * imagRange;
+
+                        minReal = newMinReal;
+                        maxReal = newMaxReal;
+                        minImag = newMinImag;
+                        maxImag = newMaxImag;
+
+                        needsRedraw = true;
+                    }
+                }
+            }
         }
+        
+            
 
 
         if (needsRedraw) {
@@ -201,6 +283,26 @@ int main() {
 
         window.clear();
         window.draw(sprite);
+
+        if (isDragging) {
+
+            int left, top, width, height;
+
+            getCorrectedBox(dragStart, dragEnd, left, top, width, height, (double)WIDTH / HEIGHT);
+
+            sf::RectangleShape zoomBox;
+
+            zoomBox.setPosition((float)left, (float) top);
+            zoomBox.setSize(sf::Vector2f((float)(width), (float)(height)));
+
+            zoomBox.setFillColor(sf::Color(255, 255, 255, 50));
+            zoomBox.setOutlineColor(sf::Color::White);
+            zoomBox.setOutlineThickness(1.0f);
+
+            window.draw(zoomBox);
+
+        }
+
         window.display();
     }
     return 0;
