@@ -3,6 +3,9 @@
 #include <thread>
 #include <vector>
 #include <cstdint>
+#include <mutex>
+#include <atomic>
+#include <optional>
 
 bool isInsideMainBulbs(double x, double y)
 {
@@ -158,6 +161,18 @@ struct PanelState {
 };
 
 
+struct RenderState {
+    std::thread worker;
+    std::mutex mutex;
+
+    std::atomic<bool> renderInProgress = false;
+    std::atomic<bool> resultReady = false;
+    std::atomic<bool> shutdown = false;
+
+    std::vector<sf::Uint8> completedPixels;
+    ScreenData pendingScreenData;
+};
+
 void renderRows(
     std::vector<sf::Uint8>& pixels,
     const ScreenData& d,
@@ -193,7 +208,7 @@ void renderRows(
     }
 }
 
-void renderMandelbrotMultithreaded(sf::Texture& texture, const ScreenData& d)
+std::vector<sf::Uint8> renderMandelbrot(const ScreenData& d)
 {
     std::vector<sf::Uint8> pixels(d.WIDTH * d.HEIGHT * 4);
 
@@ -201,6 +216,8 @@ void renderMandelbrotMultithreaded(sf::Texture& texture, const ScreenData& d)
     if (threadCount == 0) {
         threadCount = 4;
     }
+
+    threadCount = std::max(1u, threadCount - 1);
 
     std::vector<std::thread> threads;
     threads.reserve(threadCount);
@@ -213,7 +230,6 @@ void renderMandelbrotMultithreaded(sf::Texture& texture, const ScreenData& d)
         int endY = (i == threadCount - 1) ? d.HEIGHT : startY + rowsPerThread;
 
         threads.emplace_back(renderRows, std::ref(pixels), std::cref(d), startY, endY);
-
         currentStartY = endY;
     }
 
@@ -221,8 +237,50 @@ void renderMandelbrotMultithreaded(sf::Texture& texture, const ScreenData& d)
         t.join();
     }
 
-    texture.update(pixels.data());
+    return pixels;
 }
+
+void startBackgroundRender(RenderState& rs, const ScreenData& d)
+{
+    if (rs.renderInProgress) {
+        return;
+    }
+
+    rs.renderInProgress = true;
+    rs.resultReady = false;
+
+    {
+        std::lock_guard<std::mutex> lock(rs.mutex);
+        rs.pendingScreenData = d;
+    }
+
+    rs.worker = std::thread([&rs]() {
+        ScreenData localData;
+        {
+            std::lock_guard<std::mutex> lock(rs.mutex);
+            localData = rs.pendingScreenData;
+        }
+
+        std::vector<sf::Uint8> pixels = renderMandelbrot(localData);
+
+        {
+            std::lock_guard<std::mutex> lock(rs.mutex);
+            rs.completedPixels = std::move(pixels);
+        }
+
+        rs.resultReady = true;
+        rs.renderInProgress = false;
+        });
+}
+
+void joinWorkerIfFinished(RenderState& rs)
+{
+    if (rs.worker.joinable() && !rs.renderInProgress) {
+        rs.worker.join();
+    }
+}
+
+
 
 
 void getCorrectedBox(
@@ -258,6 +316,8 @@ int main() {
     ScreenData d;
     DragState s;
     PanelState p;
+
+    RenderState renderState;
 
     sf::Texture texture;
     texture.create(d.WIDTH, d.HEIGHT);
@@ -338,10 +398,21 @@ int main() {
             
 
 
-        if (d.needsRedraw) {
-            renderMandelbrotMultithreaded(texture, d);
-            sprite.setTexture(texture, true);
+        if (d.needsRedraw && !renderState.renderInProgress) {
+            startBackgroundRender(renderState, d);
             d.needsRedraw = false;
+        }
+
+        if (renderState.resultReady) {
+            {
+                std::lock_guard<std::mutex> lock(renderState.mutex);
+                if (!renderState.completedPixels.empty()) {
+                    texture.update(renderState.completedPixels.data());
+                }
+            }
+
+            renderState.resultReady = false;
+            joinWorkerIfFinished(renderState);
         }
 
 
@@ -369,5 +440,10 @@ int main() {
 
         window.display();
     }
+
+    if (renderState.worker.joinable()) {
+        renderState.worker.join();
+    }
+
     return 0;
 }
