@@ -1,5 +1,8 @@
 #include <SFML/Graphics.hpp>
 #include <algorithm>
+#include <thread>
+#include <vector>
+#include <cstdint>
 
 bool isInsideMainBulbs(double x, double y)
 {
@@ -59,6 +62,7 @@ int mandelbrot(double cx, double cy, int maxIterations)
 }
 
 
+
 struct ScreenData {
     static constexpr int WIDTH = 1920, HEIGHT = 1080;
     int maxIterations = 1000;
@@ -72,7 +76,7 @@ struct ScreenData {
 
     bool needsRedraw = true;
 
-    double offsets[4][2] = {
+    static constexpr double offsets[4][2] = {
                 {0.25, 0.25},
                 {0.75, 0.25},
                 {0.25, 0.75},
@@ -154,6 +158,73 @@ struct PanelState {
 };
 
 
+void renderRows(
+    std::vector<sf::Uint8>& pixels,
+    const ScreenData& d,
+    int startY,
+    int endY) {
+    for (int y = startY; y < endY; y++) {
+        for (int x = 0; x < d.WIDTH; x++) {
+            int totalR = 0;
+            int totalG = 0;
+            int totalB = 0;
+
+            for (int i = 0; i < 4; i++) {
+                double sampleX = x + d.offsets[i][0];
+                double sampleY = y + d.offsets[i][1];
+
+                double cx = d.minReal + sampleX / d.WIDTH * d.getRealRange();
+                double cy = d.minImag + sampleY / d.HEIGHT * d.getImagRange();
+
+                int iteration = mandelbrot(cx, cy, d.maxIterations);
+                sf::Color color = getColor(iteration, d.maxIterations);
+
+                totalR += color.r;
+                totalG += color.g;
+                totalB += color.b;
+            }
+
+            int pixelIndex = 4 * (y * d.WIDTH + x);
+            pixels[pixelIndex + 0] = static_cast<sf::Uint8>(totalR / 4);
+            pixels[pixelIndex + 1] = static_cast<sf::Uint8>(totalG / 4);
+            pixels[pixelIndex + 2] = static_cast<sf::Uint8>(totalB / 4);
+            pixels[pixelIndex + 3] = 255;
+        }
+    }
+}
+
+void renderMandelbrotMultithreaded(sf::Texture& texture, const ScreenData& d)
+{
+    std::vector<sf::Uint8> pixels(d.WIDTH * d.HEIGHT * 4);
+
+    unsigned int threadCount = std::thread::hardware_concurrency();
+    if (threadCount == 0) {
+        threadCount = 4;
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(threadCount);
+
+    int rowsPerThread = d.HEIGHT / threadCount;
+    int currentStartY = 0;
+
+    for (unsigned int i = 0; i < threadCount; i++) {
+        int startY = currentStartY;
+        int endY = (i == threadCount - 1) ? d.HEIGHT : startY + rowsPerThread;
+
+        threads.emplace_back(renderRows, std::ref(pixels), std::cref(d), startY, endY);
+
+        currentStartY = endY;
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    texture.update(pixels.data());
+}
+
+
 void getCorrectedBox(
     sf::Vector2i start,
     sf::Vector2i end,
@@ -181,51 +252,15 @@ void getCorrectedBox(
     height = abs(dy);
 }
 
-void renderMandelbrot(sf::Image& image, 
-   const ScreenData& d){
-    for (int y = 0; y < d.HEIGHT; y++) {
-        for (int x = 0; x < d.WIDTH; x++) {
 
-            
-            int totalR = 0;
-            int totalG = 0;
-            int totalB = 0;
-
-            for (int i = 0; i < 4; i++) {
-                double sampleX = x + d.offsets[i][0];
-                double sampleY = y + d.offsets[i][1];
-
-                double cx = d.minReal + sampleX / d.WIDTH * (d.maxReal - d.minReal);
-                double cy = d.minImag + sampleY / d.HEIGHT * (d.maxImag - d.minImag);
-
-                int iteration = mandelbrot(cx, cy, d.maxIterations);
-                sf::Color color = getColor(iteration, d.maxIterations);
-
-                totalR += color.r;
-                totalG += color.g;
-                totalB += color.b;
-            }
-
-            sf::Color averagedColor(
-                totalR / 4,
-                totalG / 4,
-                totalB / 4
-            );
-
-            image.setPixel(x, y, averagedColor);
-        }
-    }
-    }
 
 int main() {
     ScreenData d;
     DragState s;
     PanelState p;
 
-    sf::Image image;
-    image.create(d.WIDTH, d.HEIGHT, sf::Color::Black);
-
     sf::Texture texture;
+    texture.create(d.WIDTH, d.HEIGHT);
     sf::Sprite sprite(texture);
 
   
@@ -304,8 +339,7 @@ int main() {
 
 
         if (d.needsRedraw) {
-            renderMandelbrot(image, d);
-            texture.loadFromImage(image);
+            renderMandelbrotMultithreaded(texture, d);
             sprite.setTexture(texture, true);
             d.needsRedraw = false;
         }
