@@ -9,6 +9,7 @@
 #include <iostream>
 #include <ctime>
 #include <filesystem>
+#include <string>
 
 using Real = long double;
 
@@ -438,8 +439,8 @@ std::vector<sf::Uint8> renderMandelbrotHighRes(
 
 void startBackgroundRender(RenderState& rs, const ScreenData& d)
 {
-    if (rs.renderInProgress) {
-        return;
+    if (rs.worker.joinable()) {
+        rs.worker.join();
     }
 
     rs.renderInProgress = true;
