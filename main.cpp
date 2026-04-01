@@ -7,7 +7,10 @@
 #include <atomic>
 #include <optional>
 
-bool isInsideMainBulbs(double x, double y)
+
+using Real = long double;
+
+bool isInsideMainBulbs(Real x, Real y)
 {
     if ((x + 1.0) * (x + 1.0) + y * y <= 0.0625)
     {
@@ -40,7 +43,7 @@ sf::Color getColor(int iteration, int maxIterations) {
     return sf::Color(r, g, b);
 }
 
-int mandelbrot(double cx, double cy, int maxIterations)
+int mandelbrot(Real cx, Real cy, int maxIterations)
 {
     if (isInsideMainBulbs(cx, cy))
     {
@@ -70,12 +73,12 @@ struct ScreenData {
     static constexpr int WIDTH = 1920, HEIGHT = 1080;
     int maxIterations = 1000;
     
-    double aspect = (double)WIDTH / HEIGHT;
+    Real aspect = (double)WIDTH / HEIGHT;
 
-    double minReal = -2.5;
-    double maxReal = 1.0;
-    double minImag = -1.5;
-    double maxImag = 1.5;
+    Real minReal = -2.5;
+    Real maxReal = 1.0;
+    Real minImag = -1.5;
+    Real maxImag = 1.5;
 
     bool needsRedraw = true;
 
@@ -313,7 +316,7 @@ void getCorrectedBox(
 
 
 int main() {
-    ScreenData d;
+    ScreenData d, refresh;
     DragState s;
     PanelState p;
 
@@ -361,6 +364,10 @@ int main() {
                 }
                 else if (event.key.code == sf::Keyboard::E) {
                     d.zoom(1.5);
+                }
+                else if (event.key.code == sf::Keyboard::R) {
+                    d = refresh;
+                    d.needsRedraw = true;
                 }
             }
 
