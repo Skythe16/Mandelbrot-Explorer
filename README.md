@@ -13,6 +13,7 @@ An interactive Mandelbrot set explorer built in C++ using SFML.
 - Arrow keys: move
 - Q: zoom in
 - E: zoom out
+- R: Reset FOV to original
 
 ## How to Run
 1. Install SFML
