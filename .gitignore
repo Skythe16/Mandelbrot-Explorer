@@ -12,3 +12,7 @@ Release/
 *.dll
 *.pdb
 *.obj
+
+.DS_Store
+
+screenshots/

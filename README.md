@@ -8,6 +8,9 @@ An interactive Mandelbrot set explorer built in C++ using SFML.
 - Smooth color gradients
 - Cardioid and bulb optimization (performance)
 - Drag-box zoom with live preview
+- Draggable control panel with:
+	- Reset button
+	- Screenshot button (5120 x 2880)
 
 ## Controls
 - Arrow keys: move
