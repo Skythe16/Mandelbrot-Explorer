@@ -10,8 +10,58 @@
 #include <ctime>
 #include <filesystem>
 #include <string>
+#include <cmath>
 
 using Real = long double;
+
+struct MandelbrotResult {
+    int iteration;
+    Real zx;
+    Real zy;
+    Real dzx;
+    Real dzy;
+    bool inside;
+};
+
+struct PixelSamples {
+    MandelbrotResult samples[4];
+};
+
+sf::Color hsvToRgb(double h, double s, double v) {
+    h = std::fmod(h, 360.0);
+    if (h < 0.0) h += 360.0;
+
+    double c = v * s;
+    double x = c * (1.0 - std::abs(std::fmod(h / 60.0, 2.0) - 1.0));
+    double m = v - c;
+
+    double r1 = 0.0, g1 = 0.0, b1 = 0.0;
+
+    if (h < 60.0) {
+        r1 = c; g1 = x; b1 = 0.0;
+    }
+    else if (h < 120.0) {
+        r1 = x; g1 = c; b1 = 0.0;
+    }
+    else if (h < 180.0) {
+        r1 = 0.0; g1 = c; b1 = x;
+    }
+    else if (h < 240.0) {
+        r1 = 0.0; g1 = x; b1 = c;
+    }
+    else if (h < 300.0) {
+        r1 = x; g1 = 0.0; b1 = c;
+    }
+    else {
+        r1 = c; g1 = 0.0; b1 = x;
+    }
+
+    sf::Uint8 r = static_cast<sf::Uint8>((r1 + m) * 255.0);
+    sf::Uint8 g = static_cast<sf::Uint8>((g1 + m) * 255.0);
+    sf::Uint8 b = static_cast<sf::Uint8>((b1 + m) * 255.0);
+
+    return sf::Color(r, g, b);
+}
 
 bool isInsideMainBulbs(Real x, Real y)
 {
@@ -32,42 +82,180 @@ bool isInsideMainBulbs(Real x, Real y)
 }
 
 
-sf::Color getColor(int iteration, int maxIterations) {
-    if (iteration == maxIterations) {
-        return sf::Color::Black;
-    }
 
-    double t = (double)iteration / maxIterations;
-
-    sf::Uint8 r = static_cast<sf::Uint8>(9 * (1 - t) * t * t * t * 255);
-    sf::Uint8 g = static_cast<sf::Uint8>(15 * (1 - t) * (1 - t) * t * t * 255);
-    sf::Uint8 b = static_cast<sf::Uint8>(8.5 * (1 - t) * (1 - t) * (1 - t) * t * 255);
-
-    return sf::Color(r, g, b);
-}
-
-int mandelbrot(Real cx, Real cy, int maxIterations)
+MandelbrotResult mandelbrot(Real cx, Real cy, int maxIterations)
 {
     if (isInsideMainBulbs(cx, cy))
     {
-        return maxIterations;
+        return { maxIterations, 0.0, 0.0, true };
     }
 
     Real zx = 0.0;
     Real zy = 0.0;
+
+    Real dzx = 0.0;
+    Real dzy = 0.0;
+
     int iteration = 0;
 
     while (zx * zx + zy * zy <= Real(4.0) && iteration < maxIterations)
     {
         Real newZx = zx * zx - zy * zy + cx;
         Real newZy = 2.0 * zx * zy + cy;
+        Real newDzx = 2.0 * (zx * dzx - zy * dzy) + 1.0;
+        Real newDzy = 2.0 * (zx * dzy + zy * dzx);
 
         zx = newZx;
         zy = newZy;
+        dzx = newDzx;
+        dzy = newDzy;
+
         iteration++;
     }
 
-    return iteration;
+    return { iteration, zx, zy, dzx, dzy, iteration == maxIterations };
+}
+
+std::vector<int> buildHistogram(
+    const std::vector<PixelSamples>& results,
+    int maxIterations)
+{
+    std::vector<int> histogram(maxIterations + 1, 0);
+
+    for (const auto& pixel : results) {
+        for (int i = 0; i < 4; i++) {
+            const MandelbrotResult& r = pixel.samples[i];
+
+            if (r.iteration < maxIterations && !r.inside) {
+                histogram[r.iteration]++;
+            }
+        }
+    }
+
+    return histogram;
+}
+
+std::vector<double> buildCumulativeHistogram(
+    const std::vector<int>& histogram)
+{
+    std::vector<double> cumulative(histogram.size(), 0.0);
+
+    double total = 0.0;
+    for (int count : histogram) {
+        total += count;
+    }
+
+    if (total == 0.0) {
+        return cumulative;
+    }
+
+    double running = 0.0;
+    for (size_t i = 0; i < histogram.size(); i++) {
+        running += histogram[i];
+        cumulative[i] = running / total;
+    }
+
+    return cumulative;
+}
+
+double distanceEstimate(const MandelbrotResult& result)
+{
+    double zx = static_cast<double>(result.zx);
+    double zy = static_cast<double>(result.zy);
+    double dzx = static_cast<double>(result.dzx);
+    double dzy = static_cast<double>(result.dzy);
+
+    double zMag = std::sqrt(zx * zx + zy * zy);
+    double dzMag = std::sqrt(dzx * dzx + dzy * dzy);
+
+    if (zMag <= 0.0 || dzMag <= 0.0) return 0.0;
+
+    return zMag * std::log(zMag) / dzMag;
+}
+
+sf::Color getHistogramColor(
+    const MandelbrotResult& result,
+    int maxIterations,
+    const std::vector<double>& cumulative)
+{
+    if (result.iteration == maxIterations || result.inside) {
+        return sf::Color::Black;
+    }
+
+    double mag2 = static_cast<double>(result.zx * result.zx + result.zy * result.zy);
+    if (mag2 < 1e-12) {
+        mag2 = 1e-12;
+    }
+
+    double smooth = result.iteration + 1.0 - std::log2(std::log2(mag2));
+
+    int iter = result.iteration;
+    double frac = std::clamp(smooth - iter, 0.0, 1.0);
+
+    // Histogram-based t
+    double histT = cumulative[iter];
+    if (iter + 1 < static_cast<int>(cumulative.size())) {
+        double nextT = cumulative[iter + 1];
+        histT = histT + frac * (nextT - histT);
+    }
+    histT = std::clamp(histT, 0.0, 1.0);
+
+    // Smooth normalized t
+    double smoothT = std::clamp(smooth / maxIterations, 0.0, 1.0);
+
+    // Blend the two modes
+    double t = 0.7 * histT + 0.3 * smoothT;
+    t = std::clamp(t, 0.0, 1.0);
+
+    double hue = 270.0 * std::pow(t, 0.9);
+
+    double value = 0.1 + 0.75 * std::pow(t, 0.4);
+
+    double dist = distanceEstimate(result);
+    double glow = 1.0 / (1.0 + 4000.0 * dist);
+    glow = std::clamp(glow, 0.0, 1.0);
+
+    value += 0.7 * glow * (1.0 - t);
+    value = std::clamp(value, 0.0, 1.0);
+
+    double saturation = 0.75;
+
+    return hsvToRgb(hue, saturation, value);
+}
+
+std::vector<sf::Uint8> colorizeResults(
+    const std::vector<PixelSamples>& results,
+    int imageWidth,
+    int imageHeight,
+    int maxIterations,
+    const std::vector<double>& cumulative)
+{
+    std::vector<sf::Uint8> pixels(imageWidth * imageHeight * 4);
+
+    for (int y = 0; y < imageHeight; y++) {
+        for (int x = 0; x < imageWidth; x++) {
+            const PixelSamples& pixel = results[y * imageWidth + x];
+
+            int totalR = 0;
+            int totalG = 0;
+            int totalB = 0;
+
+            for (int i = 0; i < 4; i++) {
+                sf::Color color = getHistogramColor(pixel.samples[i], maxIterations, cumulative);
+                totalR += color.r;
+                totalG += color.g;
+                totalB += color.b;
+            }
+
+            int pixelIndex = 4 * (y * imageWidth + x);
+            pixels[pixelIndex + 0] = static_cast<sf::Uint8>(totalR / 4);
+            pixels[pixelIndex + 1] = static_cast<sf::Uint8>(totalG / 4);
+            pixels[pixelIndex + 2] = static_cast<sf::Uint8>(totalB / 4);
+            pixels[pixelIndex + 3] = 255;
+        }
+    }
+
+    return pixels;
 }
 
 
@@ -185,15 +373,16 @@ struct RenderState {
 enum class ButtonAction {
     None,
     Reset,
-    Screenshot
+    Screenshot,
+    maxIterInput
 };
 
 struct ControlPanel {
+
     struct Button {
         sf::RectangleShape shape;
         std::string label;
         sf::Text text;
-
 
         Button() = default;
 
@@ -210,7 +399,10 @@ struct ControlPanel {
             text.setString(labelText);
             text.setCharacterSize(16);
             text.setFillColor(sf::Color::White);
+
+            updateTextPosition();
         }
+
         sf::FloatRect getBounds() const {
             return shape.getGlobalBounds();
         }
@@ -223,6 +415,7 @@ struct ControlPanel {
             shape.setPosition(position);
             updateTextPosition();
         }
+
         void updateTextPosition() {
             sf::FloatRect textBounds = text.getLocalBounds();
             sf::Vector2f buttonPos = shape.getPosition();
@@ -233,11 +426,125 @@ struct ControlPanel {
                 buttonPos.y + (buttonSize.y - textBounds.height) / 2.f - textBounds.top
             );
         }
+
         void setSize(const sf::Vector2f& size) {
             shape.setSize(size);
             updateTextPosition();
         }
     };
+
+    struct TextInput {
+        sf::RectangleShape box;
+        sf::Text labelText;
+        sf::Text valueText;
+
+        std::string inputBuffer;
+        bool active = false;
+
+        int minValue = 1;
+        int maxValue = 10000;
+
+        TextInput() = default;
+
+        TextInput(const sf::Vector2f& position,
+            const sf::Vector2f& size,
+            const std::string& label,
+            sf::Font& font,
+            int initialValue)
+        {
+            box.setPosition(position);
+            box.setSize(size);
+            box.setFillColor(sf::Color(50, 50, 50));
+            box.setOutlineColor(sf::Color::White);
+            box.setOutlineThickness(1.f);
+
+            labelText.setFont(font);
+            labelText.setString(label);
+            labelText.setCharacterSize(16);
+            labelText.setFillColor(sf::Color::White);
+
+            valueText.setFont(font);
+            valueText.setString(std::to_string(initialValue));
+            valueText.setCharacterSize(16);
+            valueText.setFillColor(sf::Color::White);
+
+            inputBuffer = std::to_string(initialValue);
+
+            updatePosition(position, size);
+        }
+
+        void updatePosition(const sf::Vector2f& position, const sf::Vector2f& size) {
+            box.setPosition(position);
+            box.setSize(size);
+
+            labelText.setPosition(position.x, position.y - 22.f);
+            valueText.setPosition(position.x + 6.f, position.y + 4.f);
+        }
+
+        bool contains(const sf::Vector2f& mousePos) const {
+            return box.getGlobalBounds().contains(mousePos);
+        }
+
+        void setActive(bool isActive) {
+            active = isActive;
+            box.setOutlineColor(active ? sf::Color::Green : sf::Color::White);
+        }
+
+        void syncFromValue(int value) {
+            inputBuffer = std::to_string(value);
+            valueText.setString(inputBuffer);
+        }
+
+        void refreshDisplayedText() {
+            if (active) {
+                valueText.setString(inputBuffer + "|");
+            }
+            else {
+                valueText.setString(inputBuffer);
+            }
+        }
+
+        void handleTextEntered(const sf::Event& event) {
+            if (!active) return;
+
+            uint32_t unicode = event.text.unicode;
+
+            if (unicode == 8) {
+                if (!inputBuffer.empty()) {
+                    inputBuffer.pop_back();
+                }
+            }
+            else if (unicode >= '0' && unicode <= '9') {
+                if (inputBuffer.size() < 6) {
+                    inputBuffer += static_cast<char>(unicode);
+                }
+            }
+
+            refreshDisplayedText();
+        }
+
+        bool commit(int& targetValue) {
+            if (inputBuffer.empty()) {
+                return false;
+            }
+
+            try {
+                int newValue = std::stoi(inputBuffer);
+
+                if (newValue < minValue) newValue = minValue;
+                if (newValue > maxValue) newValue = maxValue;
+
+                targetValue = newValue;
+                inputBuffer = std::to_string(targetValue);
+                refreshDisplayedText();
+                return true;
+            }
+            catch (...) {
+                return false;
+            }
+        }
+    };
+
     struct Slider {
         sf::FloatRect bounds;
         float minValue;
@@ -247,18 +554,28 @@ struct ControlPanel {
     };
 
     sf::RectangleShape panelShape;
-
     sf::FloatRect panelBounds;
 
     Button resetButton;
     Button screenshotButton;
+    TextInput maxIterInput;
 
-    ControlPanel(PanelState& p, sf::Font& font) 
-        : resetButton(sf::Vector2f(p.position.x + (p.size.x / 6.f), p.position.y + 40.f),
-            sf::Vector2f(100.f, 30.f), 
-            "Reset", font), screenshotButton(sf::Vector2f(p.position.x + 2 * (p.size.x / 6.f), p.position.y + 40.f),
-        sf::Vector2f(100.f, 30.f),
-        "Screenshot", font) {
+    ControlPanel(PanelState& p, sf::Font& font, int initialMaxIterations)
+        : resetButton(
+            sf::Vector2f(p.position.x + (p.size.x / 6.f), p.position.y + 40.f),
+            sf::Vector2f(100.f, 30.f),
+            "Reset", font),
+        screenshotButton(
+            sf::Vector2f(p.position.x + 2 * (p.size.x / 6.f), p.position.y + 40.f),
+            sf::Vector2f(100.f, 30.f),
+            "Screenshot", font),
+        maxIterInput(
+            sf::Vector2f(p.position.x + 20.f, p.position.y + 120.f),
+            sf::Vector2f(160.f, 30.f),
+            "Max Iterations",
+            font,
+            initialMaxIterations)
+    {
         panelShape.setPosition(p.position);
         panelShape.setSize(p.size);
         panelShape.setFillColor(sf::Color(30, 30, 30, 200));
@@ -266,9 +583,6 @@ struct ControlPanel {
         panelShape.setOutlineThickness(1.f);
 
         panelBounds = sf::FloatRect(p.position.x, p.position.y, p.size.x, p.size.y);
-
-
-
     }
 
     void update(const PanelState& p) {
@@ -288,15 +602,20 @@ struct ControlPanel {
         resetButton.setSize({ buttonWidth, buttonHeight });
         screenshotButton.setSize({ buttonWidth, buttonHeight });
 
-        // Button updates
         resetButton.setPosition({
-        p.position.x + padding,
-        p.position.y + topOffset
+            p.position.x + padding,
+            p.position.y + topOffset
             });
+
         screenshotButton.setPosition({
-        p.position.x +  padding + buttonWidth + gap,
-        p.position.y + topOffset
+            p.position.x + padding + buttonWidth + gap,
+            p.position.y + topOffset
             });
+
+        maxIterInput.updatePosition(
+            { p.position.x + padding, p.position.y + 130.f },
+            { contentWidth, 30.f }
+        );
     }
 
     ButtonAction getClickedButton(const sf::Vector2f& mousePos) const {
@@ -306,17 +625,18 @@ struct ControlPanel {
         if (screenshotButton.contains(mousePos)) {
             return ButtonAction::Screenshot;
         }
+        if (maxIterInput.contains(mousePos)) {
+            return ButtonAction::maxIterInput;
+        }
         return ButtonAction::None;
     }
-
 };
 
 
 
 
-
-void renderRows(
-    std::vector<sf::Uint8>& pixels,
+void renderResultRows(
+    std::vector<PixelSamples>& results,
     const ScreenData& d,
     int imageWidth,
     int imageHeight,
@@ -325,9 +645,8 @@ void renderRows(
 {
     for (int y = startY; y < endY; y++) {
         for (int x = 0; x < imageWidth; x++) {
-            int totalR = 0;
-            int totalG = 0;
-            int totalB = 0;
+
+            PixelSamples pixel;
 
             for (int i = 0; i < 4; i++) {
                 Real sampleX = x + d.offsets[i][0];
@@ -336,69 +655,20 @@ void renderRows(
                 Real cx = d.minReal + sampleX / imageWidth * d.getRealRange();
                 Real cy = d.minImag + sampleY / imageHeight * d.getImagRange();
 
-                int iteration = mandelbrot(cx, cy, d.maxIterations);
-                sf::Color color = getColor(iteration, d.maxIterations);
-
-                totalR += color.r;
-                totalG += color.g;
-                totalB += color.b;
+                pixel.samples[i] = mandelbrot(cx, cy, d.maxIterations);
             }
 
-            int pixelIndex = 4 * (y * imageWidth + x);
-            pixels[pixelIndex + 0] = static_cast<sf::Uint8>(totalR / 4);
-            pixels[pixelIndex + 1] = static_cast<sf::Uint8>(totalG / 4);
-            pixels[pixelIndex + 2] = static_cast<sf::Uint8>(totalB / 4);
-            pixels[pixelIndex + 3] = 255;
+            results[y * imageWidth + x] = pixel;
         }
     }
 }
 
 std::vector<sf::Uint8> renderMandelbrot(const ScreenData& d)
 {
-    std::vector<sf::Uint8> pixels(d.WIDTH * d.HEIGHT * 4);
+    int imageWidth = d.WIDTH;
+    int imageHeight = d.HEIGHT;
 
-    unsigned int threadCount = std::thread::hardware_concurrency();
-    if (threadCount == 0) {
-        threadCount = 4;
-    }
-
-    threadCount = std::max(1u, threadCount - 1);
-
-    std::vector<std::thread> threads;
-    threads.reserve(threadCount);
-
-    int rowsPerThread = d.HEIGHT / threadCount;
-    int currentStartY = 0;
-
-    for (unsigned int i = 0; i < threadCount; i++) {
-        int startY = currentStartY;
-        int endY = (i == threadCount - 1) ? d.HEIGHT : startY + rowsPerThread;
-
-        threads.emplace_back(
-            renderRows,
-            std::ref(pixels),
-            std::cref(d),
-            d.WIDTH,
-            d.HEIGHT,
-            startY,
-            endY
-        );
-        currentStartY = endY;
-    }
-
-    for (auto& t : threads) {
-        t.join();
-    }
-
-    return pixels;
-}
-
-std::vector<sf::Uint8> renderMandelbrotHighRes(
-    const ScreenData& d,
-    int imageWidth,
-    int imageHeight)
-{
-    std::vector<sf::Uint8> pixels(imageWidth * imageHeight * 4);
+    std::vector<PixelSamples> results(imageWidth * imageHeight);
 
     unsigned int threadCount = std::thread::hardware_concurrency();
     if (threadCount == 0) {
@@ -418,8 +688,8 @@ std::vector<sf::Uint8> renderMandelbrotHighRes(
         int endY = (i == threadCount - 1) ? imageHeight : startY + rowsPerThread;
 
         threads.emplace_back(
-            renderRows,
-            std::ref(pixels),
+            renderResultRows,
+            std::ref(results),
             std::cref(d),
             imageWidth,
             imageHeight,
@@ -434,7 +704,57 @@ std::vector<sf::Uint8> renderMandelbrotHighRes(
         t.join();
     }
 
-    return pixels;
+    std::vector<int> histogram = buildHistogram(results, d.maxIterations);
+    std::vector<double> cumulative = buildCumulativeHistogram(histogram);
+
+    return colorizeResults(results, imageWidth, imageHeight, d.maxIterations, cumulative);
+}
+
+std::vector<sf::Uint8> renderMandelbrotHighRes(
+    const ScreenData& d,
+    int imageWidth,
+    int imageHeight)
+{
+    std::vector<PixelSamples> results(imageWidth * imageHeight);
+
+    unsigned int threadCount = std::thread::hardware_concurrency();
+    if (threadCount == 0) {
+        threadCount = 4;
+    }
+
+    threadCount = std::max(1u, threadCount - 1);
+
+    std::vector<std::thread> threads;
+    threads.reserve(threadCount);
+
+    int rowsPerThread = imageHeight / threadCount;
+    int currentStartY = 0;
+
+    for (unsigned int i = 0; i < threadCount; i++) {
+        int startY = currentStartY;
+        int endY = (i == threadCount - 1) ? imageHeight : startY + rowsPerThread;
+
+        threads.emplace_back(
+            renderResultRows,
+            std::ref(results),
+            std::cref(d),
+            imageWidth,
+            imageHeight,
+            startY,
+            endY
+        );
+
+        currentStartY = endY;
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    std::vector<int> histogram = buildHistogram(results, d.maxIterations);
+    std::vector<double> cumulative = buildCumulativeHistogram(histogram);
+
+    return colorizeResults(results, imageWidth, imageHeight, d.maxIterations, cumulative);
 }
 
 void startBackgroundRender(RenderState& rs, const ScreenData& d)
@@ -518,7 +838,7 @@ int main() {
         std::cout << "Error loading font, try again.";
     }
 
-    ControlPanel c(p, font);
+    ControlPanel c(p, font, d.maxIterations);
 
     RenderState renderState;
 
@@ -551,6 +871,20 @@ int main() {
                 Real moveAmountReal = d.getRealRange() * 0.1;
                 Real moveAmountImag = d.getImagRange() * 0.1;
 
+                if (event.key.code == sf::Keyboard::Enter &&
+                    c.maxIterInput.active)
+                {
+                    if (c.maxIterInput.commit(d.maxIterations)) {
+                        d.needsRedraw = true;
+                    }
+                    c.maxIterInput.setActive(false);
+                }
+
+                if (event.key.code == sf::Keyboard::Escape) {
+                    c.maxIterInput.setActive(false);
+                    c.maxIterInput.syncFromValue(d.maxIterations);
+                }
+
                 if (event.key.code == sf::Keyboard::Left) {
                     d.move(-moveAmountReal, 0);
                 }
@@ -578,13 +912,14 @@ int main() {
             //Mouse Controls
             else if (event.type == sf::Event::MouseButtonPressed) {
                 if (event.mouseButton.button == sf::Mouse::Left) {
-                    sf::Vector2f mousePos(
-                        static_cast<float>(event.mouseButton.x),
-                        static_cast<float>(event.mouseButton.y)
-                    );
+                    sf::Vector2f mousePos(window.mapPixelToCoords(sf::Mouse::getPosition(window)));
 
                     if (c.panelBounds.contains(mousePos.x, mousePos.y)) {
                         ButtonAction action = c.getClickedButton(mousePos);
+
+                        c.maxIterInput.setActive(
+                            c.maxIterInput.contains(mousePos)
+                        );
 
                         if (action == ButtonAction::Reset) {
                             d = refresh;
@@ -657,6 +992,9 @@ int main() {
                     }
                 }
             }
+            else if (event.type == sf::Event::TextEntered) {
+                c.maxIterInput.handleTextEntered(event);
+}
         }
         
             
@@ -714,6 +1052,10 @@ int main() {
         window.draw(c.resetButton.text);
         window.draw(c.screenshotButton.text);
 
+        c.maxIterInput.refreshDisplayedText();
+        window.draw(c.maxIterInput.labelText);
+        window.draw(c.maxIterInput.box);
+        window.draw(c.maxIterInput.valueText);
 
 
 

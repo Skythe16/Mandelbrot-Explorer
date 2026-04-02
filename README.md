@@ -5,12 +5,15 @@ An interactive Mandelbrot set explorer built in C++ using SFML.
 ## Features
 - Zoom and pan navigation
 - Anti-aliasing (4x supersampling)
+- Histographic coloring
+- Edge aware glow
 - Smooth color gradients
 - Cardioid and bulb optimization (performance)
 - Drag-box zoom
 - Draggable control panel with:
 	- Reset button
 	- Screenshot button (5120 x 2880)
+	- Max iteration editor
 
 ## Controls
 - Arrow keys: move
